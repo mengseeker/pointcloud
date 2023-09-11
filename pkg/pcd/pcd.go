@@ -38,7 +38,7 @@ func DecodePcd(r io.Reader) (pcd *Pcd, err error) {
 		}
 	}
 
-	if !strings.HasPrefix(version, "VERSION 0.7") {
+	if !strings.HasPrefix(version, "VERSION 0.7") && !strings.HasPrefix(version, "VERSION .7") {
 		return nil, ErrUnsupportPcdVersion
 	}
 
@@ -183,22 +183,26 @@ func (pcd *Pcd) LoadBinPoints(r io.Reader, width, height int, fields map[string]
 		w += counts[i] * sizes[i]
 	}
 	bs := make([]byte, w)
-	for {
-		_, err = io.ReadFull(r, bs)
-		if err != nil {
-			if errors.Is(io.EOF, err) {
-				break
+	spliter := make([]byte, 1)
+	for i1 := 0; i1 < height; i1++ {
+		for i2 := 0; i2 < width; i2++ {
+			_, err = io.ReadFull(r, bs)
+			if err != nil {
+				if errors.Is(io.EOF, err) {
+					break
+				}
+				return err
 			}
-			return err
+
+			pcd.AddPoint(Point{
+				X: math.Float32frombits(binary.LittleEndian.Uint32(bs[xb:xe])),
+				Y: math.Float32frombits(binary.LittleEndian.Uint32(bs[yb:ye])),
+				Z: math.Float32frombits(binary.LittleEndian.Uint32(bs[zb:ze])),
+				R: 1,
+			})
+
 		}
-
-		pcd.AddPoint(Point{
-			X: math.Float32frombits(binary.LittleEndian.Uint32(bs[xb:xe])),
-			Y: math.Float32frombits(binary.LittleEndian.Uint32(bs[yb:ye])),
-			Z: math.Float32frombits(binary.LittleEndian.Uint32(bs[zb:ze])),
-			R: 1,
-		})
-
+		r.Read(spliter)
 	}
 
 	return nil
