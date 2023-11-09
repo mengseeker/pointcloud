@@ -7,7 +7,7 @@ import (
 )
 
 func TestDecodePCD(t *testing.T) {
-	var pcdf = ".dev/compressed.pcd"
+	var pcdf = ".dev/in/mul.pcd"
 	pcdio, err := os.Open(pcdf)
 	if err != nil {
 		t.Fatal(err)

@@ -93,7 +93,7 @@ func DecodePcd(r io.Reader) (pcd *Pcd, err error) {
 
 	pcd = &Pcd{
 		PointCloud: PointCloud{
-			Points: []Point{},
+			Points: make([]Point, 0, width*height),
 		},
 	}
 	if dataType == "binary" {
@@ -123,41 +123,42 @@ const (
 )
 
 func (pcd *Pcd) LoadBinCompressedPoints(r io.Reader, width, height int, fields map[string]int, sizes, counts []int, types []string) (err error) {
-	compressedSizesRaw := make([]byte, BinaryCompressedSize)
-	n, err := io.ReadFull(r, compressedSizesRaw)
-	if err != nil {
-		return
+	var nCompressed, nUncompressed int32
+	if err := binary.Read(r, binary.LittleEndian, &nCompressed); err != nil {
+		return err
 	}
-	if n != BinaryCompressedSize {
-		return ErrInvalidPcdFormat
-	}
-	compressedSize := binary.LittleEndian.Uint32(compressedSizesRaw[:4])
-	uncompressedSize := binary.LittleEndian.Uint32(compressedSizesRaw[4:])
-	// 计算单点数据大小
-	var pointSize int
-	for i := range sizes {
-		pointSize += sizes[i] * counts[i]
-	}
-	if uncompressedSize != uint32(width*height*pointSize) {
-		return ErrInvalidPcdFormat
+	if err := binary.Read(r, binary.LittleEndian, &nUncompressed); err != nil {
+		return err
 	}
 
-	raw := make([]byte, compressedSize)
-	_, err = io.ReadFull(r, raw)
-	if err != nil {
-		return
-	}
-	uncompressed := make([]byte, uncompressedSize)
-
-	n, err = lzf.Decompress(raw, uncompressed)
-	if err != nil {
-		return
-	}
-	if n != int(uncompressedSize) {
-		return ErrInvalidPcdFormat
+	b := make([]byte, nCompressed)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return err
 	}
 
-	return pcd.LoadBinPoints(bytes.NewReader(uncompressed), width, height, fields, sizes, counts, types)
+	dec := make([]byte, nUncompressed)
+	n, err := lzf.Decompress(b[:nCompressed], dec)
+	if err != nil {
+		return err
+	}
+	if int(nUncompressed) != n {
+		return errors.New("wrong uncompressed size")
+	}
+	tdata := make([]byte, len(dec))
+	sizesSum := make([]int, len(sizes)+1)
+	for i := 1; i < len(sizesSum); i++ {
+		sizesSum[i] = sizesSum[i-1] + sizes[i-1]
+	}
+	rawsize := sizesSum[len(sizesSum)-1]
+	var from, to int
+	for i := 0; i < width; i++ {
+		for j := range sizes {
+			from = sizesSum[j]*width + i*sizes[j]
+			to = i*rawsize + sizesSum[j]
+			copy(tdata[to:to+sizes[j]], dec[from:from+sizes[j]])
+		}
+	}
+	return pcd.LoadBinPoints(bytes.NewReader(tdata), width, height, fields, sizes, counts, types)
 }
 
 func (pcd *Pcd) LoadBinPoints(r io.Reader, width, height int, fields map[string]int, sizes, counts []int, types []string) (err error) {
@@ -174,6 +175,7 @@ func (pcd *Pcd) LoadBinPoints(r io.Reader, width, height int, fields map[string]
 	xi, xb, xe := getfieldIndexAndOffset(fields, sizes, counts, "x")
 	yi, yb, ye := getfieldIndexAndOffset(fields, sizes, counts, "y")
 	zi, zb, ze := getfieldIndexAndOffset(fields, sizes, counts, "z")
+
 	if !(xi >= 0 && yi >= 0 && zi >= 0) {
 		return ErrInvalidPcdFormat
 	}
@@ -184,6 +186,7 @@ func (pcd *Pcd) LoadBinPoints(r io.Reader, width, height int, fields map[string]
 	}
 	bs := make([]byte, w)
 	spliter := make([]byte, 1)
+	var x, y, z float32
 	for i1 := 0; i1 < height; i1++ {
 		for i2 := 0; i2 < width; i2++ {
 			_, err = io.ReadFull(r, bs)
@@ -193,14 +196,16 @@ func (pcd *Pcd) LoadBinPoints(r io.Reader, width, height int, fields map[string]
 				}
 				return err
 			}
-
+			x = math.Float32frombits(binary.LittleEndian.Uint32(bs[xb:xe]))
+			y = math.Float32frombits(binary.LittleEndian.Uint32(bs[yb:ye]))
+			z = math.Float32frombits(binary.LittleEndian.Uint32(bs[zb:ze]))
 			pcd.AddPoint(Point{
-				X: math.Float32frombits(binary.LittleEndian.Uint32(bs[xb:xe])),
-				Y: math.Float32frombits(binary.LittleEndian.Uint32(bs[yb:ye])),
-				Z: math.Float32frombits(binary.LittleEndian.Uint32(bs[zb:ze])),
+				X: x,
+				Y: y,
+				Z: z,
 				R: 1,
 			})
-
+			// fmt.Printf("raw: %x-%x-%x,x: %.2f, y: %.2f, z: %.2f\n", bs[xb:xe], bs[yb:ye], bs[zb:ze], x, y, z)
 		}
 		r.Read(spliter)
 	}
